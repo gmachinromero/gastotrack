@@ -21,7 +21,7 @@ from telegram.ext import (
 
 from gastotrack.config import Config
 from gastotrack.ocr import extraer_texto, OCRError
-from gastotrack.parser import parsear_ticket
+from gastotrack.parser import parsear_ticket, ParserError, ParserConfigError
 from gastotrack.clasificador import Clasificador
 from gastotrack.bd import BaseDatos
 from gastotrack.modelos import Ticket, DetalleTicket
@@ -204,6 +204,18 @@ async def procesar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except OCRError as e:
         logger.error(f"Error de OCR: {e}")
         await mensaje_procesando.edit_text(f"❌ Error al procesar la imagen: {e}")
+    except ParserConfigError as e:
+        logger.error(f"Error de configuración del parser: {e}")
+        await mensaje_procesando.edit_text(
+            "⚠️ Error de configuración del sistema.\n"
+            "Por favor, contacta al administrador."
+        )
+    except ParserError as e:
+        logger.error(f"Error de parseo: {e}")
+        await mensaje_procesando.edit_text(
+            "❌ No pude procesar este ticket.\n"
+            "Por favor, intenta con una foto más clara o envía los datos manualmente."
+        )
     except Exception as e:
         logger.error(f"Error inesperado: {e}", exc_info=True)
         await mensaje_procesando.edit_text(

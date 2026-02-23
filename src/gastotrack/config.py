@@ -25,7 +25,7 @@ class Config:
 
     # Configuración del parser
     PARSER_USE_LLM: bool = os.getenv("PARSER_USE_LLM", "true").lower() == "true"
-    PARSER_LLM_MODEL: str = os.getenv("PARSER_LLM_MODEL", "claude-3-5-haiku-20241022")
+    PARSER_LLM_MODEL: str = os.getenv("PARSER_LLM_MODEL", "claude-haiku-4-5-20251001")
 
     # Rutas
     DB_PATH: str = os.getenv("DB_PATH", "datos/gastotrack.db")
@@ -46,11 +46,11 @@ class Config:
         if not cls.OCR_LANGUAGE:
             errores.append("OCR_LANGUAGE no está configurado en .env")
 
-        # Validar configuración del parser
-        if cls.PARSER_USE_LLM and not cls.ANTHROPIC_API_KEY:
+        # Validar configuración del parser (ahora obligatorio)
+        if not cls.ANTHROPIC_API_KEY:
             errores.append(
-                "PARSER_USE_LLM está activado pero ANTHROPIC_API_KEY no está configurado. "
-                "Configura ANTHROPIC_API_KEY o desactiva PARSER_USE_LLM."
+                "ANTHROPIC_API_KEY no está configurado. "
+                "El parser requiere Claude Haiku para funcionar."
             )
 
         # Verificar que existan los directorios necesarios

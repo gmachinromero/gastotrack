@@ -1,6 +1,6 @@
 """
 Módulo de parseo de tickets para GastoTrack.
-Extrae información estructurada del texto OCR usando Claude Haiku 3.5.
+Extrae información estructurada del texto OCR usando Claude Haiku exclusivamente.
 """
 
 import re
@@ -15,6 +15,44 @@ from gastotrack.config import Config
 # Configurar logging
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# EXCEPCIONES PERSONALIZADAS
+# ============================================================================
+
+class ParserError(Exception):
+    """Error durante el parseo del ticket."""
+    pass
+
+
+class ParserConfigError(Exception):
+    """Error de configuración del parser."""
+    pass
+
+
+# ============================================================================
+# CONSTANTES
+# ============================================================================
+
+# Patrones de supermercados conocidos (usados en el prompt del LLM)
+PATRONES_SUPERMERCADOS = [
+    (r'AHORRAMAS', 'AHORRAMAS'),
+    (r'ALCAMPO', 'ALCAMPO'),
+    (r'ALDI', 'ALDI'),
+    (r'CARREFOUR', 'CARREFOUR'),
+    (r'CONSUM', 'CONSUM'),
+    (r'DIA', 'DIA'),
+    (r'EROSKI', 'EROSKI'),
+    (r'HIPERCOR', 'HIPERCOR'),
+    (r'LIDL', 'LIDL'),
+    (r'MERCADONA', 'MERCADONA'),
+    (r'SUPERCOR', 'SUPERCOR'),
+]
+
+
+# ============================================================================
+# CLASE DE DATOS
+# ============================================================================
 
 class LineaProducto:
     """Representa una línea de producto parseada."""
@@ -43,7 +81,7 @@ class LineaProducto:
 
 
 # ============================================================================
-# FUNCIONES PARA PARSER CON LLM
+# FUNCIONES DE PROMPT
 # ============================================================================
 
 def crear_prompt_parseo(texto_ocr: str) -> str:
@@ -56,16 +94,25 @@ def crear_prompt_parseo(texto_ocr: str) -> str:
     Returns:
         Prompt formateado para el LLM
     """
+    # Extraer nombres de supermercados conocidos
+    supermercados_conocidos = ", ".join([nombre for _, nombre in PATRONES_SUPERMERCADOS])
+    
     return f"""Eres un experto en parsear tickets de supermercado en español.
 
 Tu tarea es extraer información estructurada del siguiente texto OCR de un ticket.
+
+SUPERMERCADOS CONOCIDOS EN ESPAÑA:
+{supermercados_conocidos}
+
+Si detectas alguno de estos nombres en el ticket, úsalo exactamente como aparece en la lista anterior.
+Si no reconoces el supermercado, intenta extraer el nombre de las primeras líneas del ticket.
 
 INSTRUCCIONES:
 1. Identifica TODOS los productos comprados, incluyendo aquellos cuya descripción está en una línea separada del precio
 2. Para productos con peso (kg), extrae:
    - Descripción del producto
    - Cantidad en kg
-   - Precio por kg
+   - Precio por kg (€/kg)
    - Precio total
 3. Para productos normales, extrae:
    - Descripción del producto
@@ -75,7 +122,7 @@ INSTRUCCIONES:
    - Información del establecimiento (dirección, teléfono, CIF)
    - Métodos de pago, cambio, tarjeta
    - Números de caja, ticket, operador
-   - Promociones o descuentos (líneas con "dto", "ahorro", "promotion")
+   - Promociones o descuentos (líneas con "dto", "ahorro", "promotion", "PROMOCION")
 5. Extrae también:
    - Fecha del ticket (formato YYYY-MM-DD)
    - Nombre del supermercado
@@ -87,7 +134,10 @@ IMPORTANTE:
 - Las cantidades de peso también usan punto decimal (ej: 1.200, no 1,200)
 
 FORMATO DE SALIDA:
-Responde ÚNICAMENTE con un objeto JSON válido con esta estructura:
+Responde ÚNICAMENTE con un objeto JSON válido. NO incluyas texto explicativo antes o después del JSON.
+NO uses bloques de código markdown (```json). El JSON debe empezar directamente con {{ y terminar con }}.
+
+Estructura del JSON:
 {{
   "supermercado": "NOMBRE_SUPERMERCADO",
   "fecha": "YYYY-MM-DD",
@@ -110,7 +160,77 @@ TEXTO OCR:
 {texto_ocr}"""
 
 
-def validar_respuesta_llm(respuesta: dict) -> bool:
+# ============================================================================
+# FUNCIONES DE EXTRACCIÓN
+# ============================================================================
+
+def extraer_json_de_respuesta(respuesta_texto: str) -> dict:
+    """
+    Extrae JSON de la respuesta del LLM, manejando casos donde
+    hay texto adicional antes/después del JSON.
+    
+    Args:
+        respuesta_texto: Texto de respuesta del LLM
+        
+    Returns:
+        Diccionario parseado del JSON
+        
+    Raises:
+        json.JSONDecodeError: Si no se encuentra JSON válido
+    """
+    texto = respuesta_texto.strip()
+    
+    # Caso 1: Respuesta limpia (ideal)
+    if texto.startswith('{') and texto.endswith('}'):
+        try:
+            return json.loads(texto)
+        except json.JSONDecodeError:
+            pass  # Intentar otros métodos
+    
+    # Caso 2: Respuesta con markdown ```json
+    if '```json' in texto:
+        inicio = texto.find('```json') + 7
+        fin = texto.find('```', inicio)
+        if fin != -1:
+            json_texto = texto[inicio:fin].strip()
+            try:
+                return json.loads(json_texto)
+            except json.JSONDecodeError:
+                pass
+    
+    # Caso 3: Respuesta con markdown ``` sin especificar json
+    if '```' in texto:
+        inicio = texto.find('```') + 3
+        fin = texto.find('```', inicio)
+        if fin != -1:
+            json_texto = texto[inicio:fin].strip()
+            try:
+                return json.loads(json_texto)
+            except json.JSONDecodeError:
+                pass
+    
+    # Caso 4: Buscar el primer { y último }
+    inicio = texto.find('{')
+    fin = texto.rfind('}')
+    if inicio != -1 and fin != -1 and inicio < fin:
+        json_texto = texto[inicio:fin+1]
+        try:
+            return json.loads(json_texto)
+        except json.JSONDecodeError:
+            pass
+    
+    # Si no se encuentra JSON válido
+    raise json.JSONDecodeError(
+        "No se encontró JSON válido en la respuesta del LLM",
+        texto, 0
+    )
+
+
+# ============================================================================
+# FUNCIONES DE VALIDACIÓN
+# ============================================================================
+
+def validar_respuesta_llm(respuesta: dict) -> tuple[bool, str]:
     """
     Valida que la respuesta del LLM tenga la estructura correcta.
     
@@ -118,37 +238,65 @@ def validar_respuesta_llm(respuesta: dict) -> bool:
         respuesta: Diccionario con la respuesta del LLM
         
     Returns:
-        True si la respuesta es válida, False en caso contrario
+        Tupla (válido, mensaje_error)
     """
     try:
-        # Verificar campos obligatorios
+        # Verificar que sea un diccionario
         if not isinstance(respuesta, dict):
-            return False
+            return False, "La respuesta no es un diccionario"
         
-        if 'productos' not in respuesta:
-            return False
+        # Verificar campos obligatorios
+        campos_requeridos = ['productos', 'supermercado', 'fecha', 'total']
+        for campo in campos_requeridos:
+            if campo not in respuesta:
+                return False, f"Falta el campo obligatorio: {campo}"
         
+        # Verificar que productos sea una lista
         if not isinstance(respuesta['productos'], list):
-            return False
+            return False, "El campo 'productos' debe ser una lista"
         
-        # Verificar estructura de productos
-        for producto in respuesta['productos']:
+        # Verificar que haya al menos un producto
+        if len(respuesta['productos']) == 0:
+            return False, "No se encontraron productos en el ticket"
+        
+        # Verificar estructura de cada producto
+        for i, producto in enumerate(respuesta['productos']):
             if not isinstance(producto, dict):
-                return False
+                return False, f"Producto {i+1} no es un diccionario"
             
-            if 'descripcion' not in producto or 'precio' not in producto:
-                return False
+            if 'descripcion' not in producto:
+                return False, f"Producto {i+1} no tiene descripción"
             
-            # Si tiene cantidad_kg, debe tener precio_por_kg
-            if 'cantidad_kg' in producto and 'precio_por_kg' not in producto:
-                return False
+            if 'precio' not in producto:
+                return False, f"Producto {i+1} no tiene precio"
+            
+            # Validar coherencia de productos con peso
+            if 'cantidad_kg' in producto:
+                if 'precio_por_kg' not in producto:
+                    return False, f"Producto {i+1} tiene cantidad_kg pero no precio_por_kg"
         
-        return True
+        # Validar tipos de datos numéricos
+        try:
+            float(respuesta['total'])
+        except (ValueError, TypeError):
+            return False, f"El total no es un número válido: {respuesta['total']}"
+        
+        # Validar formato de fecha
+        try:
+            datetime.strptime(respuesta['fecha'], '%Y-%m-%d')
+        except (ValueError, TypeError):
+            return False, f"La fecha no tiene formato válido (YYYY-MM-DD): {respuesta['fecha']}"
+        
+        return True, ""
         
     except Exception as e:
         logger.error(f"Error validando respuesta LLM: {e}")
-        return False
+        return False, f"Error inesperado en validación: {e}"
 
+
+# ============================================================================
+# FUNCIONES DE CONVERSIÓN
+# ============================================================================
 
 def convertir_respuesta_llm(respuesta: dict) -> dict:
     """
@@ -179,24 +327,43 @@ def convertir_respuesta_llm(respuesta: dict) -> dict:
     }
 
 
-def parsear_con_llm(texto_ocr: str, max_retries: int = 2) -> dict:
+# ============================================================================
+# FUNCIÓN PRINCIPAL DE PARSEO
+# ============================================================================
+
+def parsear_con_llm(texto_ocr: str, max_retries: int = 3) -> dict:
     """
-    Parsea el ticket usando Claude Haiku 3.5 de Anthropic.
+    Parsea el ticket usando Claude Haiku de Anthropic.
     
     Args:
         texto_ocr: Texto extraído por OCR
         max_retries: Número máximo de reintentos en caso de error
         
     Returns:
-        Diccionario con la información parseada
+        Diccionario con la información parseada:
+        {
+            'productos': list[LineaProducto],
+            'total': float,
+            'fecha': str,
+            'supermercado': str
+        }
+        
+    Raises:
+        ParserConfigError: Si no está configurada la API key
+        ParserError: Si no se puede parsear el ticket después de los reintentos
     """
+    # Validar configuración
     if not Config.ANTHROPIC_API_KEY:
-        logger.warning("ANTHROPIC_API_KEY no configurada, usando parser regex")
-        return parsear_con_regex(texto_ocr)
+        raise ParserConfigError(
+            "ANTHROPIC_API_KEY no está configurada. "
+            "Configura la variable de entorno para usar el parser con LLM."
+        )
     
     try:
         client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
         prompt = crear_prompt_parseo(texto_ocr)
+        
+        ultimo_error = None
         
         for intento in range(max_retries):
             try:
@@ -211,246 +378,59 @@ def parsear_con_llm(texto_ocr: str, max_retries: int = 2) -> dict:
                 
                 # Extraer texto de la respuesta
                 respuesta_texto = message.content[0].text
-                logger.debug(f"Respuesta LLM: {respuesta_texto}")
+                logger.debug(f"Respuesta LLM (intento {intento + 1}):\n{respuesta_texto[:500]}...")
                 
-                # Parsear JSON
-                respuesta_json = json.loads(respuesta_texto)
+                # Extraer JSON (maneja casos con texto adicional)
+                respuesta_json = extraer_json_de_respuesta(respuesta_texto)
+                logger.debug(f"JSON extraído: {json.dumps(respuesta_json, indent=2, ensure_ascii=False)}")
                 
                 # Validar estructura
-                if validar_respuesta_llm(respuesta_json):
-                    logger.info("Parseo con LLM exitoso")
-                    return convertir_respuesta_llm(respuesta_json)
-                else:
-                    logger.warning("Respuesta LLM inválida, reintentando...")
-                    
+                valido, mensaje_error = validar_respuesta_llm(respuesta_json)
+                if not valido:
+                    logger.warning(f"Respuesta LLM inválida (intento {intento + 1}): {mensaje_error}")
+                    ultimo_error = mensaje_error
+                    continue
+                
+                # Convertir y retornar
+                logger.info("✅ Parseo con LLM exitoso")
+                return convertir_respuesta_llm(respuesta_json)
+                
             except json.JSONDecodeError as e:
-                logger.error(f"Error parseando JSON de LLM: {e}")
-                if intento == max_retries - 1:
-                    logger.warning("Fallback a parser regex")
-                    return parsear_con_regex(texto_ocr)
-                    
+                logger.error(f"Error parseando JSON (intento {intento + 1}): {e}")
+                logger.debug(f"Respuesta que causó el error:\n{respuesta_texto}")
+                ultimo_error = f"JSON inválido: {e}"
+                
             except anthropic.APIError as e:
-                logger.error(f"Error de API de Anthropic: {e}")
-                if intento == max_retries - 1:
-                    logger.warning("Fallback a parser regex")
-                    return parsear_con_regex(texto_ocr)
+                logger.error(f"Error de API de Anthropic (intento {intento + 1}): {e}")
+                ultimo_error = f"Error de API: {e}"
+                
+            except Exception as e:
+                logger.error(f"Error inesperado (intento {intento + 1}): {e}")
+                ultimo_error = f"Error inesperado: {e}"
         
         # Si llegamos aquí, todos los intentos fallaron
-        logger.warning("Todos los intentos con LLM fallaron, usando parser regex")
-        return parsear_con_regex(texto_ocr)
+        raise ParserError(
+            f"No se pudo parsear el ticket después de {max_retries} intentos. "
+            f"Último error: {ultimo_error}"
+        )
         
+    except anthropic.APIError as e:
+        raise ParserError(f"Error de API de Anthropic: {e}")
     except Exception as e:
-        logger.error(f"Error inesperado en parsear_con_llm: {e}")
-        return parsear_con_regex(texto_ocr)
+        if isinstance(e, (ParserError, ParserConfigError)):
+            raise
+        raise ParserError(f"Error inesperado en parsear_con_llm: {e}")
 
 
 # ============================================================================
-# FUNCIONES PARA PARSER CON REGEX (FALLBACK)
-# ============================================================================
-
-# Patrones de supermercados conocidos
-PATRONES_SUPERMERCADOS = [
-    (r'AHORRAMAS', 'AHORRAMAS'),
-    (r'ALCAMPO', 'ALCAMPO'),
-    (r'ALDI', 'ALDI'),
-    (r'CARREFOUR', 'CARREFOUR'),
-    (r'CONSUM', 'CONSUM'),
-    (r'DIA', 'DIA'),
-    (r'EROSKI', 'EROSKI'),
-    (r'HIPERCOR', 'HIPERCOR'),
-    (r'LIDL', 'LIDL'),
-    (r'MERCADONA', 'MERCADONA'),
-    (r'SUPERCOR', 'SUPERCOR'),
-]
-
-# Palabras clave que indican que una línea NO es un producto
-PALABRAS_NO_PRODUCTO = [
-    'total', 'subtotal', 'iva', 'cambio', 'tarjeta', 'efectivo',
-    'dto', 'descuento', 'ahorro', 'pago', 'importe', 'base',
-    'ticket', 'factura', 'gracias', 'vuelva', 'pronto'
-]
-
-
-def normalizar_precio(texto_precio: str) -> Optional[float]:
-    """
-    Normaliza un texto de precio a float.
-    
-    Args:
-        texto_precio: Texto que contiene un precio (ej: "8,90€", "8.90", "8,90 ")
-        
-    Returns:
-        Precio como float o None si no se puede parsear
-    """
-    texto = texto_precio.strip().replace('€', '').replace(' ', '')
-    texto = texto.replace(',', '.')
-    
-    try:
-        return float(texto)
-    except ValueError:
-        return None
-
-
-def extraer_lineas_productos(texto_ocr: str) -> list[LineaProducto]:
-    """
-    Extrae líneas de productos del texto OCR usando regex.
-    
-    Args:
-        texto_ocr: Texto extraído por OCR
-        
-    Returns:
-        Lista de LineaProducto
-    """
-    lineas = texto_ocr.split('\n')
-    productos = []
-    patron_precio = r'(\d+[.,]\d{2})\s*€?\s*$'
-    
-    for linea in lineas:
-        linea = linea.strip()
-        if not linea:
-            continue
-        
-        match = re.search(patron_precio, linea)
-        if not match:
-            continue
-        
-        texto_precio = match.group(1)
-        precio = normalizar_precio(texto_precio)
-        if precio is None:
-            continue
-        
-        descripcion = linea[:match.start()].strip()
-        if not descripcion or len(descripcion) < 3:
-            continue
-        
-        descripcion_lower = descripcion.lower()
-        if any(palabra in descripcion_lower for palabra in PALABRAS_NO_PRODUCTO):
-            continue
-        
-        productos.append(LineaProducto(descripcion, precio))
-    
-    return productos
-
-
-def detectar_total(texto_ocr: str) -> Optional[float]:
-    """
-    Detecta el total del ticket.
-    
-    Args:
-        texto_ocr: Texto extraído por OCR
-        
-    Returns:
-        Total como float o None si no se encuentra
-    """
-    lineas = texto_ocr.split('\n')
-    patron_total = r'total\s*[:\-]?\s*(\d+[.,]\d{2})'
-    
-    for linea in lineas:
-        linea_lower = linea.lower()
-        if 'total' in linea_lower:
-            match = re.search(patron_total, linea_lower)
-            if match:
-                precio = normalizar_precio(match.group(1))
-                if precio is not None:
-                    return precio
-    
-    productos = extraer_lineas_productos(texto_ocr)
-    if productos:
-        max_producto = max(p.precio for p in productos)
-        for linea in reversed(lineas[-10:]):
-            match = re.search(r'(\d+[.,]\d{2})', linea)
-            if match:
-                precio = normalizar_precio(match.group(1))
-                if precio and precio >= max_producto:
-                    return precio
-    
-    return None
-
-
-def detectar_fecha(texto_ocr: str) -> str:
-    """
-    Detecta la fecha del ticket.
-    
-    Args:
-        texto_ocr: Texto extraído por OCR
-        
-    Returns:
-        Fecha en formato YYYY-MM-DD o fecha actual si no se encuentra
-    """
-    patrones = [
-        r'(\d{2})[/-](\d{2})[/-](\d{4})',
-        r'(\d{2})[/-](\d{2})[/-](\d{2})',
-    ]
-    
-    for linea in texto_ocr.split('\n'):
-        for patron in patrones:
-            match = re.search(patron, linea)
-            if match:
-                dia, mes, año = match.groups()
-                if len(año) == 2:
-                    año = f"20{año}"
-                try:
-                    fecha = datetime(int(año), int(mes), int(dia))
-                    return fecha.strftime('%Y-%m-%d')
-                except ValueError:
-                    continue
-    
-    return datetime.now().strftime('%Y-%m-%d')
-
-
-def detectar_supermercado(texto_ocr: str) -> str:
-    """
-    Detecta el nombre del supermercado.
-    
-    Args:
-        texto_ocr: Texto extraído por OCR
-        
-    Returns:
-        Nombre del supermercado o "DESCONOCIDO" si no se encuentra
-    """
-    primeras_lineas = '\n'.join(texto_ocr.split('\n')[:10]).upper()
-    
-    for patron, nombre in PATRONES_SUPERMERCADOS:
-        if re.search(patron, primeras_lineas):
-            return nombre
-    
-    return "DESCONOCIDO"
-
-
-def parsear_con_regex(texto_ocr: str) -> dict:
-    """
-    Parsea el ticket usando expresiones regulares (método antiguo).
-    
-    Args:
-        texto_ocr: Texto extraído por OCR
-        
-    Returns:
-        Diccionario con la información parseada
-    """
-    productos = extraer_lineas_productos(texto_ocr)
-    total = detectar_total(texto_ocr)
-    fecha = detectar_fecha(texto_ocr)
-    supermercado = detectar_supermercado(texto_ocr)
-    
-    if total is None and productos:
-        total = sum(p.precio for p in productos)
-    
-    return {
-        'productos': productos,
-        'total': total or 0.0,
-        'fecha': fecha,
-        'supermercado': supermercado,
-    }
-
-
-# ============================================================================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PÚBLICA
 # ============================================================================
 
 def parsear_ticket(texto_ocr: str) -> dict:
     """
     Parsea el texto OCR completo y extrae toda la información del ticket.
     
-    Usa LLM si está configurado, o regex como fallback.
+    Usa exclusivamente Claude Haiku (LLM) para el parseo.
     
     Args:
         texto_ocr: Texto extraído por OCR
@@ -463,10 +443,9 @@ def parsear_ticket(texto_ocr: str) -> dict:
             'fecha': str,
             'supermercado': str
         }
+        
+    Raises:
+        ParserConfigError: Si no está configurada la API key
+        ParserError: Si no se puede parsear el ticket
     """
-    if Config.PARSER_USE_LLM:
-        logger.info("Usando parser con LLM")
-        return parsear_con_llm(texto_ocr)
-    else:
-        logger.info("Usando parser con regex")
-        return parsear_con_regex(texto_ocr)
+    return parsear_con_llm(texto_ocr)
