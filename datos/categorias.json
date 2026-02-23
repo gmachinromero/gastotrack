@@ -1,0 +1,107 @@
+{
+  "aperitivo": [
+    "anchoa",
+    "boquerones",
+    "patatas fritas",
+    "regañas"
+  ],
+  "carne": [
+    "bistec",
+    "cerdo",
+    "chorizo",
+    "costilla",
+    "filete",
+    "hamburguesa",
+    "jamon",
+    "lomo",
+    "pollo",
+    "salchich",
+    "ternera"
+  ],
+  "pescado": [
+    "atun",
+    "bacalao",
+    "calamar",
+    "gamba",
+    "mejillon",
+    "merluza",
+    "pescadilla",
+    "salmon",
+    "sardina"
+  ],
+  "lacteos": [
+    "batido",
+    "crema",
+    "flan",
+    "kefir",
+    "leche",
+    "mantequilla",
+    "nata",
+    "queso",
+    "requeson",
+    "yogur"
+  ],
+  "panaderia": [
+    "baguette",
+    "barra",
+    "bolleria",
+    "croissant",
+    "pan molde",
+    "pan integral",
+    "pan"
+  ],
+  "bebidas": [
+    "agua",
+    "cafe",
+    "cerveza",
+    "coca",
+    "fanta",
+    "infusion",
+    "refresco",
+    "sprite",
+    "te",
+    "vino",
+    "zumo"
+  ],
+  "verduras": [
+    "berenjena",
+    "brocoli",
+    "calabacin",
+    "cebolla",
+    "espinaca",
+    "lechuga",
+    "patata",
+    "pepino",
+    "pimiento",
+    "puerro",
+    "tomate",
+    "zanahoria"
+  ],
+  "frutas": [
+    "aguacate",
+    "ciruela",
+    "fresa",
+    "kiwi",
+    "lima",
+    "limon",
+    "mandarina",
+    "manzana",
+    "melon",
+    "naranja",
+    "pera",
+    "platano",
+    "sandia"
+  ],
+  "hogar": [
+    "bolsa basura",
+    "champu",
+    "detergente",
+    "esponja",
+    "jabon",
+    "limpiador",
+    "papel",
+    "servilleta",
+    "suavizante",
+    "trapo"
+  ]
+}
