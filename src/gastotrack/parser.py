@@ -333,7 +333,7 @@ def convertir_respuesta_llm(respuesta: dict) -> dict:
 
 def parsear_con_llm(texto_ocr: str, max_retries: int = 3) -> dict:
     """
-    Parsea el ticket usando Claude Haiku de Anthropic.
+    Parsea el ticket usando un llm
     
     Args:
         texto_ocr: Texto extraído por OCR
